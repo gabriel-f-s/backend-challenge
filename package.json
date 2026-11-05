@@ -9,6 +9,8 @@
     "start": "bun run src/main.ts",
     "start:dev": "bun --watch run src/main.ts",
     "start:prod": "bun run dist/main.js",
+    "migration:up": "bun run src/shared/adapters/outbound/persistence/run-migrations.ts up",
+    "migration:down": "bun run src/shared/adapters/outbound/persistence/run-migrations.ts down",
     "test": "bun test test/unit",
     "test:integration": "bun test test/integration",
     "test:concurrency": "bun test test/concurrency",

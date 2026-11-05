@@ -1,5 +1,6 @@
+import { MikroORM } from "@mikro-orm/core";
 import { MikroOrmModule } from "@mikro-orm/nestjs";
-import { Global, Module } from "@nestjs/common";
+import { Global, Module, type OnModuleInit } from "@nestjs/common";
 import { ConfigModule } from "@nestjs/config";
 import { APP_FILTER } from "@nestjs/core";
 import { DomainExceptionFilter } from "@shared/adapters/inbound/http/filters/domain-exception.filter";
@@ -8,6 +9,7 @@ import { NoopProviderIdentityAdapter } from "@shared/adapters/outbound/auth/noop
 import { loadEnvironmentConfig } from "@shared/adapters/outbound/config/env.config";
 import { createMikroOrmOptions } from "@shared/adapters/outbound/persistence/mikro-orm.config";
 import { MikroOrmUnitOfWorkAdapter } from "@shared/adapters/outbound/persistence/mikro-orm-unit-of-work.adapter";
+import { createSqsClient, SQS_CLIENT } from "@shared/adapters/outbound/sqs/sqs-client.factory";
 import { SystemClockAdapter } from "@shared/adapters/outbound/system/system-clock.adapter";
 import { UuidV7GeneratorAdapter } from "@shared/adapters/outbound/system/uuid-v7-generator.adapter";
 import { CLOCK_PORT } from "@shared/application/ports/outbound/clock.port";
@@ -44,6 +46,10 @@ import { UNIT_OF_WORK_PORT } from "@shared/application/ports/outbound/unit-of-wo
       useClass: MikroOrmUnitOfWorkAdapter,
     },
     {
+      provide: SQS_CLIENT,
+      useFactory: () => createSqsClient(loadEnvironmentConfig()),
+    },
+    {
       provide: APP_FILTER,
       useClass: DomainExceptionFilter,
     },
@@ -54,7 +60,17 @@ import { UNIT_OF_WORK_PORT } from "@shared/application/ports/outbound/unit-of-wo
     CLOCK_PORT,
     ID_GENERATOR_PORT,
     UNIT_OF_WORK_PORT,
+    SQS_CLIENT,
     NoopAuthGuard,
   ],
 })
-export class SharedModule {}
+export class SharedModule implements OnModuleInit {
+  constructor(private readonly mikroOrm: MikroORM) {}
+
+  async onModuleInit(): Promise<void> {
+    if (process.env.AUTO_RUN_MIGRATIONS === "false" || process.env.NODE_ENV === "test") {
+      return;
+    }
+    await this.mikroOrm.getMigrator().up();
+  }
+}
