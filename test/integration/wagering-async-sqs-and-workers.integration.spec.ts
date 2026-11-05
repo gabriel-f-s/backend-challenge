@@ -253,12 +253,14 @@ describe("Wagering Async SQS & PendingReferenceWorker Integration (Real PostgreS
       },
     };
 
+    const sqsRunId = idGenerator.generate();
+
     await sqsClient.send(
       new SendMessageCommand({
         QueueUrl: env.sqs.wagerTransactionsQueueUrl,
         MessageBody: JSON.stringify(messagePayload),
         MessageGroupId: wallet.id,
-        MessageDeduplicationId: "dedup-sqs-001-first",
+        MessageDeduplicationId: `dedup-${sqsRunId}-first`,
       }),
     );
 
@@ -276,7 +278,7 @@ describe("Wagering Async SQS & PendingReferenceWorker Integration (Real PostgreS
         QueueUrl: env.sqs.wagerTransactionsQueueUrl,
         MessageBody: JSON.stringify(messagePayload),
         MessageGroupId: wallet.id,
-        MessageDeduplicationId: "dedup-sqs-001-redelivery",
+        MessageDeduplicationId: `dedup-${sqsRunId}-redelivery`,
       }),
     );
 
@@ -298,7 +300,7 @@ describe("Wagering Async SQS & PendingReferenceWorker Integration (Real PostgreS
           data: {},
         }),
         MessageGroupId: wallet.id,
-        MessageDeduplicationId: "dedup-poison-1",
+        MessageDeduplicationId: `dedup-${sqsRunId}-poison`,
       }),
     );
 
