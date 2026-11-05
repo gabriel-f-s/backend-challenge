@@ -11,7 +11,7 @@ describe("Environment Configuration & Auth Extension Port", () => {
     expect(config.nodeEnv).toBe("development");
     expect(config.port).toBe(3000);
     expect(config.database.host).toBe("localhost");
-    expect(config.database.port).toBe(5432);
+    expect(config.database.port).toBe(5433);
     expect(config.sqs.wagerTransactionsQueueName).toBe("wager-transactions.fifo");
     expect(config.sqs.wagerTransactionsDlqName).toBe("wager-transactions-dlq.fifo");
     expect(config.sqs.wagerTransactionsQueueUrl).toBe(

@@ -50,7 +50,7 @@ export function loadEnvironmentConfig(
     port: parsePort(rawEnv.PORT, 3000, "PORT"),
     database: {
       host: rawEnv.DB_HOST?.trim() || "localhost",
-      port: parsePort(rawEnv.DB_PORT, 5432, "DB_PORT"),
+      port: parsePort(rawEnv.DB_PORT, 5433, "DB_PORT"),
       user: rawEnv.DB_USER?.trim() || "jungle",
       password: rawEnv.DB_PASSWORD?.trim() || "jungle_secret",
       name: rawEnv.DB_NAME?.trim() || "wagering_processor",
