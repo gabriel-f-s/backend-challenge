@@ -12,9 +12,9 @@
     "migration:up": "bun run src/shared/adapters/outbound/persistence/run-migrations.ts up",
     "migration:down": "bun run src/shared/adapters/outbound/persistence/run-migrations.ts down",
     "test": "bun test test/unit",
-    "test:integration": "bun test test/integration",
-    "test:concurrency": "bun test test/concurrency",
-    "test:all": "bun test"
+    "test:integration": "bun test test/integration --concurrency 1",
+    "test:concurrency": "bun test test/concurrency --concurrency 1",
+    "test:all": "bun test test/unit && bun test test/integration --concurrency 1 && bun test test/concurrency --concurrency 1"
   },
   "dependencies": {
     "@aws-sdk/client-sqs": "^3.700.0",
