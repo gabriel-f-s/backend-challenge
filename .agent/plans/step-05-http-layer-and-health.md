@@ -1,13 +1,18 @@
-# Etapa 5 — Camada HTTP (Controllers, Validação, Status Codes e Health Checks)
+# Etapa 5 — Módulo `Wagering` Core & HTTP (Domain → Application → Adapters → Tests)
 
 ## Objetivo
+Implementar de ponta a ponta o núcleo do módulo `Wagering` e sua interface HTTP, cobrindo `WagerTransaction`, máquina de estados estrita, regras de `BET`, `WIN`, `LOSS`, `REFUND` e `ROLLBACK`, idempotência por `Idempotency-Key` + `payloadHash` e transações fora de ordem (`PENDING_REFERENCE`).
 
-Implementar os adaptadores inbound HTTP REST conforme a Seção 9 do `README.md`, garantindo distinção clara e consistente de códigos HTTP e paginação por cursor opaco.
-
-## Escopo Previsto
-
-1. **Endpoints de Wallet (`POST /wallets`, `GET /wallets/:walletId`, `GET /wallets/:walletId/ledger`, `POST /wallets/:walletId/reconciliation`).**
-2. **Endpoints de Wagering (`POST /wagering/transactions`, `GET /wagering/transactions/:transactionId`, `GET /providers/:providerId/wagering/transactions/:externalTransactionId`).**
-3. **Endpoints de Health Check abertos (`GET /health/live` e `GET /health/ready` verificando PostgreSQL e MiniStack SQS).**
-4. **Global Domain Exception Filter:**
-   - Mapeamento consistente distinguindo: Payload inválido (`400`), Recurso não encontrado (`404`), Conflito de Idempotência / Duplicidade de Wallet (`409`), Rejeição por Regra de Negócio com `failureCode` (`422`), Aceite com Processamento Pendente `PENDING_REFERENCE` (`202`) e Falha Transitória de Infraestrutura (`503`).
+## Escopo Vertical
+1. **Domain (`src/modules/wagering/domain/`):**
+   - `WagerTransaction`: `create`, `rehydrate`, `markProcessed`, `markPendingReference`, `reject`, `fail`, `isTerminal`, `affectsBalance`, `requiresReference`, `matchesPayload`, `ledgerDirectionFor`.
+   - Enums: `WagerTransactionKind`, `WagerTransactionStatus`.
+   - Eventos de Integração: `WagerTransactionProcessed`, `WagerTransactionRejected`, `WagerTransactionPendingReference`.
+2. **Application (`src/modules/wagering/application/`):**
+   - Port: `WagerTransactionRepositoryPort`.
+   - Use Cases: `ProcessWagerTransactionUseCase`, `GetWagerTransactionUseCase` (por ID interno e por `providerId + externalTransactionId`), `RetryPendingReferenceTransactionsUseCase`.
+3. **Adapters (`src/modules/wagering/adapters/`):**
+   - Outbound Persistence: `WagerTransactionSchema`, Mapper, Repositório MikroORM e Migration SQL (`UNIQUE(idempotency_key)`, `UNIQUE(provider_id, external_transaction_id)` e índice único parcial impedindo dupla reversão).
+   - Inbound HTTP: `WageringController` (`POST /wagering/transactions`, `GET /wagering/transactions/:transactionId`, `GET /providers/:providerId/wagering/transactions/:externalTransactionId`) e DTOs.
+4. **Tests (`test/unit/wagering/`):**
+   - Testes unitários completos de `WagerTransaction`, regras de negócio (`BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`), idempotência, conflito de payload e `PENDING_REFERENCE`.

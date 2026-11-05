@@ -1,19 +1,18 @@
-# Etapa 4 — Casos de Uso Financeiros, Idempotência e Concorrência
+# Etapa 4 — Módulo `Wallet` & `Ledger` (Domain → Application → Adapters → Tests)
 
 ## Objetivo
+Implementar de ponta a ponta o módulo de Carteiras (`Wallet`) e Razão Contábil (`WalletLedgerEntry`), garantindo imutabilidade do ledger, saldo nunca negativo, controle de concorrência por `walletId` (`SELECT ... FOR UPDATE` + incremento de `version`), paginação por cursor opaco e reconciliação.
 
-Implementar a camada `application/` com os casos de uso financeiros e de consulta, garantindo atomicidade transacional (Inbox + WagerTransaction + Wallet + Ledger + Outbox), idempotência persistente (`Idempotency-Key` + `payloadHash` canônico) e controle de concorrência por `walletId` via Pessimistic Locking + incremento de `version`.
-
-## Escopo Previsto
-
-1. **`OpenWalletUseCase`:**
-   - Cria a `Wallet` e, caso `initialBalance > 0`, registra na mesma transação SQL uma `WagerTransaction` interna `OPENING`, um `WalletLedgerEntry` (`CREDIT`) e o evento `WalletBalanceChanged` na Outbox.
-2. **`ProcessWagerTransactionUseCase` (reutilizado por HTTP e SQS):**
-   - Verifica e resolve idempotência (`idempotentReplay: true` com o saldo observado originalmente, ou erro de conflito se `payloadHash` divergir).
-   - Adquire lock pessimista (`SELECT ... FOR UPDATE`) sobre a `Wallet`.
-   - Aplica regras de `BET`, `WIN`, `LOSS`, `REFUND` e `ROLLBACK` (incluindo transição para `PENDING_REFERENCE` quando a referência ainda não chegou).
-   - Persiste `WagerTransaction`, `Wallet`, `WalletLedgerEntry` (quando aplicável) e `OutboxMessage` atomicamente.
-3. **`ReconcileWalletUseCase`:**
-   - Recalcula o saldo a partir de todas as entradas do ledger da wallet, compara com `storedBalance`, loga e contabiliza métrica caso haja divergência sem sobrescrever silenciosamente.
-4. **Casos de Uso de Consulta:**
-   - `GetWalletUseCase`, `ListWalletLedgerUseCase` (com cursor opaco estável), `GetWagerTransactionUseCase` (por ID interno e por `providerId + externalTransactionId`).
+## Escopo Vertical
+1. **Domain (`src/modules/wallet/domain/`):**
+   - `Wallet` (Aggregate Root): `open`, `rehydrate`, `debit`, `credit`, invariante de moeda única e saldo >= 0, `version` iniciando em 1 e incrementando exclusivamente quando o saldo muda.
+   - `WalletLedgerEntry` (imutável): `create`, `rehydrate`, `isBalanced()`, `LedgerDirection`.
+   - Evento de Integração: `WalletBalanceChanged`.
+2. **Application (`src/modules/wallet/application/`):**
+   - Ports: `WalletRepositoryPort` (incluindo `findByIdForUpdate`), `WalletLedgerRepositoryPort` (cursor opaco estável).
+   - Use Cases: `OpenWalletUseCase` (gerando transação `OPENING` + `CREDIT` no ledger + `WalletBalanceChanged` na Outbox quando `initialBalance > 0`), `GetWalletUseCase`, `ListWalletLedgerUseCase`, `ReconcileWalletUseCase`.
+3. **Adapters (`src/modules/wallet/adapters/`):**
+   - Outbound Persistence: `WalletSchema`, `WalletLedgerEntrySchema`, Mappers, Repositórios MikroORM e Migration SQL (`UNIQUE(player_id, currency)`, `CHECK(balance_amount >= 0)`, `UNIQUE(wallet_id, transaction_id)` e trigger SQL bloqueando `UPDATE`/`DELETE` em `wallet_ledger_entries`).
+   - Inbound HTTP: `WalletController` (`POST /wallets`, `GET /wallets/:walletId`, `GET /wallets/:walletId/ledger`, `POST /wallets/:walletId/reconciliation`) e DTOs.
+4. **Tests (`test/unit/wallet/`):**
+   - Testes unitários de `Wallet`, `WalletLedgerEntry`, `OpenWalletUseCase`, `ReconcileWalletUseCase` e cursor pagination.

@@ -1,21 +1,25 @@
-# Etapa 2 — Modelo de Domínio & Testes Unitários
+# Etapa 2 — Módulo `Shared` (Domain → Application → Adapters → Tests)
 
 ## Objetivo
+Implementar de ponta a ponta o módulo transversal `Shared`, fornecendo as primitivas financeiras (`Money`), contrato de eventos (`IntegrationEvent<T>`), taxonomia de erros (`DomainError` / `FailureCode`), hash canônico de idempotência (`CanonicalPayloadHash`), portas base (`UnitOfWorkPort`, `ClockPort`, `IdGeneratorPort`), adaptadores de sistema/persistência (`MikroOrmUnitOfWork`, `SystemClockAdapter`, `UuidV7GeneratorAdapter`) e o filtro global de exceções HTTP (`DomainExceptionFilter`).
 
-Implementar o núcleo de domínio 100% em TypeScript puro (sem dependências de NestJS ou MikroORM), com construtores privados, factories estáticas (`create`, `from`, `open`, `receive`, `enqueue`) e reidratação (`rehydrate`), acompanhado de bateria exaustiva de testes unitários.
-
-## Escopo Previsto
-
-1. **Shared Domain:**
-   - `Money` (`decimal.js`, escala fixa de 2 casas, imutável, validação rigorosa contra `NaN`, `Infinity`, notação científica, mais de 2 casas decimais e conflito de moedas).
-   - `IntegrationEvent<T>` (classe abstrata base) e subclasses concretas: `WagerTransactionProcessed`, `WagerTransactionRejected`, `WalletBalanceChanged`, `WagerTransactionPendingReference`.
-   - `DomainError`, `FailureCode` (taxonomia determinística distinguindo saldo insuficiente em aposta, saldo insuficiente em reversão, referência inválida/duplicada, conflito de moeda, etc.) e `CanonicalPayloadHash`.
-2. **Wallet Domain:**
-   - `Wallet` (Aggregate Root): `open`, `rehydrate`, `debit`, `credit`, controle de `version` (inicia em 1, incrementa apenas quando o saldo muda) e invariante de saldo não-negativo.
-   - `WalletLedgerEntry` (imutável): `create`, `rehydrate`, `isBalanced()`.
-3. **Wagering Domain:**
-   - `WagerTransaction`: `create`, `rehydrate`, máquina de estados estrita (`PENDING`, `PENDING_REFERENCE`, `PROCESSED`, `REJECTED`, `FAILED`), regras de `BET`, `WIN`, `LOSS`, `REFUND` e `ROLLBACK`.
-4. **Messaging Domain:**
-   - `InboxMessage` (`receive`, `rehydrate`, `markProcessed`) e `OutboxMessage` (`enqueue`, `rehydrate`, `markPublished`, `scheduleRetry` com backoff exponencial).
-5. **Testes Unitários (`test/unit/`):**
-   - Cobertura completa de todas as invariantes exigidas na Seção 13 do `README.md`.
+## Entregáveis da Etapa 2
+1. **Domain (`src/shared/domain/`):**
+   - `value-objects/money.vo.ts`: `Money` e `MoneyProps` baseados em `Decimal` (escala fixa de 2 casas, imutável, validações rigorosas de formato e moeda).
+   - `errors/failure-code.enum.ts` & `errors/domain.error.ts`: `FailureCode` e classes semânticas (`DomainValidationError`, `ResourceNotFoundError`, `ConflictError`, `IdempotencyConflictError`, `BusinessRuleViolationError`, `InvalidTransactionStateError`, `TransientInfrastructureError`).
+   - `events/integration-event.base.ts`: `IntegrationEvent<T>`, `IntegrationEventProps<T>`, `EventContext`.
+   - `services/canonical-payload-hash.service.ts`: serialização JSON canônica recursiva e hash `SHA-256`.
+2. **Application Ports (`src/shared/application/ports/outbound/`):**
+   - `unit-of-work.port.ts` (`UNIT_OF_WORK_PORT`, `UnitOfWorkPort`).
+   - `clock.port.ts` (`CLOCK_PORT`, `ClockPort`).
+   - `id-generator.port.ts` (`ID_GENERATOR_PORT`, `IdGeneratorPort`).
+3. **Adapters (`src/shared/adapters/`):**
+   - `outbound/system/system-clock.adapter.ts` & `uuid-v7-generator.adapter.ts`.
+   - `outbound/persistence/mikro-orm.config.ts` & `mikro-orm-unit-of-work.adapter.ts`.
+   - `inbound/http/filters/domain-exception.filter.ts`.
+4. **Testes Unitários (`test/unit/shared/`):**
+   - `money.vo.spec.ts`
+   - `canonical-payload-hash.service.spec.ts`
+   - `integration-event.spec.ts`
+   - `domain-exception.filter.spec.ts`
+   - `system-adapters.spec.ts`
