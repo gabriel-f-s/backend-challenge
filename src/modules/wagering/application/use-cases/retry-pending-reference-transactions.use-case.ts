@@ -13,12 +13,17 @@ import {
   WALLET_REPOSITORY_PORT,
   type WalletRepositoryPort,
 } from "@modules/wallet/application/ports/outbound/wallet.repository.port";
-import { Inject, Injectable } from "@nestjs/common";
+import { Inject, Injectable, Optional } from "@nestjs/common";
 import { CLOCK_PORT, type ClockPort } from "@shared/application/ports/outbound/clock.port";
 import {
   ID_GENERATOR_PORT,
   type IdGeneratorPort,
 } from "@shared/application/ports/outbound/id-generator.port";
+import { METRICS_PORT, type MetricsPort } from "@shared/application/ports/outbound/metrics.port";
+import {
+  STRUCTURED_LOGGER_PORT,
+  type StructuredLoggerPort,
+} from "@shared/application/ports/outbound/structured-logger.port";
 import {
   UNIT_OF_WORK_PORT,
   type UnitOfWorkPort,
@@ -57,6 +62,12 @@ export class RetryPendingReferenceTransactionsUseCase {
     @Inject(CLOCK_PORT)
     private readonly clock: ClockPort,
     private readonly processWagerTransactionUseCase: ProcessWagerTransactionUseCase,
+    @Optional()
+    @Inject(METRICS_PORT)
+    private readonly metrics?: MetricsPort,
+    @Optional()
+    @Inject(STRUCTURED_LOGGER_PORT)
+    private readonly logger?: StructuredLoggerPort,
   ) {}
 
   async execute(
@@ -116,6 +127,7 @@ export class RetryPendingReferenceTransactionsUseCase {
             },
           );
           await this.outboxRepository.enqueue(OutboxMessage.enqueue(rejectedEvent));
+          this.metrics?.incrementTransactionByStatus(transaction.status, transaction.kind);
           rejectedCount += 1;
           continue;
         }
@@ -170,11 +182,19 @@ export class RetryPendingReferenceTransactionsUseCase {
             },
           );
           await this.outboxRepository.enqueue(OutboxMessage.enqueue(rejectedEvent));
+          this.metrics?.incrementTransactionByStatus(transaction.status, transaction.kind);
+          this.logger?.warn("wager_transaction_pending_reference_timed_out", {
+            transactionId: transaction.id,
+            walletId: transaction.walletId,
+            providerId: transaction.providerId,
+            attempts: nextAttemptCount,
+          });
           timedOutCount += 1;
           rejectedCount += 1;
         } else {
           transaction.schedulePendingReferenceRetry(now);
           await this.wagerTransactionRepository.save(transaction);
+          this.metrics?.incrementRetry("pending_reference");
           retriedCount += 1;
         }
       }
@@ -188,4 +208,3 @@ export class RetryPendingReferenceTransactionsUseCase {
     });
   }
 }
-

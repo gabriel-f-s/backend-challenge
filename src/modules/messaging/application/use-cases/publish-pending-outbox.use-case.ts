@@ -6,8 +6,9 @@ import {
   OUTBOX_REPOSITORY_PORT,
   type OutboxRepositoryPort,
 } from "@modules/messaging/application/ports/outbound/outbox.repository.port";
-import { Inject, Injectable } from "@nestjs/common";
+import { Inject, Injectable, Optional } from "@nestjs/common";
 import { CLOCK_PORT, type ClockPort } from "@shared/application/ports/outbound/clock.port";
+import { METRICS_PORT, type MetricsPort } from "@shared/application/ports/outbound/metrics.port";
 import {
   UNIT_OF_WORK_PORT,
   type UnitOfWorkPort,
@@ -30,6 +31,9 @@ export class PublishPendingOutboxUseCase {
     private readonly eventPublisher: IntegrationEventPublisherPort,
     @Inject(CLOCK_PORT)
     private readonly clock: ClockPort,
+    @Optional()
+    @Inject(METRICS_PORT)
+    private readonly metrics?: MetricsPort,
   ) {}
 
   async execute(batchSize = 50): Promise<PublishPendingOutboxResult> {
@@ -49,8 +53,14 @@ export class PublishPendingOutboxUseCase {
         } catch {
           message.scheduleRetry(this.clock.now());
           await this.outboxRepository.save(message);
+          this.metrics?.incrementRetry("outbox");
           retried += 1;
         }
+      }
+
+      if (this.metrics) {
+        const remainingPending = await this.outboxRepository.countPending();
+        this.metrics.setOutboxLag(remainingPending);
       }
 
       return {
@@ -61,4 +71,3 @@ export class PublishPendingOutboxUseCase {
     });
   }
 }
-

@@ -29,12 +29,21 @@ import {
 import type { Wallet } from "@modules/wallet/domain/entities/wallet.entity";
 import { LedgerDirection } from "@modules/wallet/domain/enums/ledger-direction.enum";
 import { WalletBalanceChanged } from "@modules/wallet/domain/events/wallet-balance-changed.event";
-import { Inject, Injectable } from "@nestjs/common";
+import { Inject, Injectable, Optional } from "@nestjs/common";
 import { CLOCK_PORT, type ClockPort } from "@shared/application/ports/outbound/clock.port";
+import {
+  CORRELATION_CONTEXT_PORT,
+  type CorrelationContextPort,
+} from "@shared/application/ports/outbound/correlation-context.port";
 import {
   ID_GENERATOR_PORT,
   type IdGeneratorPort,
 } from "@shared/application/ports/outbound/id-generator.port";
+import { METRICS_PORT, type MetricsPort } from "@shared/application/ports/outbound/metrics.port";
+import {
+  STRUCTURED_LOGGER_PORT,
+  type StructuredLoggerPort,
+} from "@shared/application/ports/outbound/structured-logger.port";
 import {
   UNIT_OF_WORK_PORT,
   type UnitOfWorkPort,
@@ -96,9 +105,19 @@ export class ProcessWagerTransactionUseCase {
     private readonly idGenerator: IdGeneratorPort,
     @Inject(CLOCK_PORT)
     private readonly clock: ClockPort,
+    @Optional()
+    @Inject(METRICS_PORT)
+    private readonly metrics?: MetricsPort,
+    @Optional()
+    @Inject(STRUCTURED_LOGGER_PORT)
+    private readonly logger?: StructuredLoggerPort,
+    @Optional()
+    @Inject(CORRELATION_CONTEXT_PORT)
+    private readonly correlationContext?: CorrelationContextPort,
   ) {}
 
   async execute(command: ProcessWagerTransactionCommand): Promise<ProcessWagerTransactionOutput> {
+    const startedAt = performance.now();
     if (!command.idempotencyKey || command.idempotencyKey.trim() === "") {
       throw new DomainValidationError(
         "Idempotency-Key header is required",
@@ -138,93 +157,137 @@ export class ProcessWagerTransactionUseCase {
       createdAt: this.clock.now(),
     });
 
-    return this.unitOfWork.runInTransaction(async () => {
-      const now = this.clock.now();
-      let inboxMessageToComplete: InboxMessage | undefined;
+    const correlationId =
+      command.correlationId ??
+      this.correlationContext?.get()?.correlationId ??
+      candidateTransaction.id;
+    this.correlationContext?.merge({
+      correlationId,
+      messageId: command.inboxEnvelope?.messageId,
+      transactionId: candidateTransaction.id,
+      walletId: candidateTransaction.walletId,
+      providerId: candidateTransaction.providerId,
+    });
 
-      if (command.inboxEnvelope) {
-        const inboxCandidate = InboxMessage.receive({
-          consumerName: command.inboxEnvelope.consumerName,
-          messageId: command.inboxEnvelope.messageId,
-          payloadHash,
-          receivedAt: now,
-        });
-        const inboxResult = await this.inboxRepository.insertIfAbsent(inboxCandidate);
-        if (!inboxResult.inserted && inboxResult.message.isProcessed()) {
-          const existingForInbox = await this.findExistingTransaction(
-            idempotencyKey,
-            candidateTransaction.providerId,
-            candidateTransaction.externalTransactionId,
-          );
-          if (existingForInbox) {
-            return this.buildReplayOutput(existingForInbox, payloadHash);
+    try {
+      return await this.unitOfWork.runInTransaction(async () => {
+        const now = this.clock.now();
+        let inboxMessageToComplete: InboxMessage | undefined;
+
+        if (command.inboxEnvelope) {
+          const inboxCandidate = InboxMessage.receive({
+            consumerName: command.inboxEnvelope.consumerName,
+            messageId: command.inboxEnvelope.messageId,
+            payloadHash,
+            receivedAt: now,
+          });
+          const inboxResult = await this.inboxRepository.insertIfAbsent(inboxCandidate);
+          if (!inboxResult.inserted && inboxResult.message.isProcessed()) {
+            const existingForInbox = await this.findExistingTransaction(
+              idempotencyKey,
+              candidateTransaction.providerId,
+              candidateTransaction.externalTransactionId,
+            );
+            if (existingForInbox) {
+              this.metrics?.incrementDuplicateDetected("sqs_inbox");
+              this.logger?.info("wager_transaction_inbox_duplicate_detected", {
+                transactionId: existingForInbox.id,
+                walletId: existingForInbox.walletId,
+                providerId: existingForInbox.providerId,
+                messageId: command.inboxEnvelope.messageId,
+              });
+              return this.buildReplayOutput(existingForInbox, payloadHash);
+            }
+          }
+          if (!inboxResult.message.isProcessed()) {
+            inboxMessageToComplete = inboxResult.message;
           }
         }
-        if (!inboxResult.message.isProcessed()) {
-          inboxMessageToComplete = inboxResult.message;
-        }
-      }
 
-      const preLockExisting = await this.findExistingTransaction(
-        idempotencyKey,
-        candidateTransaction.providerId,
-        candidateTransaction.externalTransactionId,
-      );
-      if (preLockExisting) {
-        const replay = await this.buildReplayOutput(preLockExisting, payloadHash);
-        if (inboxMessageToComplete) {
-          inboxMessageToComplete.markProcessed(now);
-          await this.inboxRepository.save(inboxMessageToComplete);
-        }
-        return replay;
-      }
-
-      const wallet = await this.walletRepository.findByIdForUpdate(candidateTransaction.walletId);
-      if (!wallet) {
-        throw new ResourceNotFoundError(
-          `Wallet "${candidateTransaction.walletId}" not found`,
-          "WALLET_NOT_FOUND",
+        const preLockExisting = await this.findExistingTransaction(
+          idempotencyKey,
+          candidateTransaction.providerId,
+          candidateTransaction.externalTransactionId,
         );
-      }
+        if (preLockExisting) {
+          const replay = await this.buildReplayOutput(preLockExisting, payloadHash);
+          if (inboxMessageToComplete) {
+            inboxMessageToComplete.markProcessed(now);
+            await this.inboxRepository.save(inboxMessageToComplete);
+          }
+          this.metrics?.incrementDuplicateDetected(
+            command.inboxEnvelope ? "sqs_inbox" : "http_idempotency",
+          );
+          this.logger?.info("wager_transaction_idempotent_replay", {
+            transactionId: preLockExisting.id,
+            walletId: preLockExisting.walletId,
+            providerId: preLockExisting.providerId,
+          });
+          return replay;
+        }
 
-      const postLockExisting = await this.findExistingTransaction(
-        idempotencyKey,
-        candidateTransaction.providerId,
-        candidateTransaction.externalTransactionId,
-      );
-      if (postLockExisting) {
-        const replay = await this.buildReplayOutput(postLockExisting, payloadHash, wallet);
+        const wallet = await this.walletRepository.findByIdForUpdate(candidateTransaction.walletId);
+        if (!wallet) {
+          throw new ResourceNotFoundError(
+            `Wallet "${candidateTransaction.walletId}" not found`,
+            "WALLET_NOT_FOUND",
+          );
+        }
+
+        const postLockExisting = await this.findExistingTransaction(
+          idempotencyKey,
+          candidateTransaction.providerId,
+          candidateTransaction.externalTransactionId,
+        );
+        if (postLockExisting) {
+          const replay = await this.buildReplayOutput(postLockExisting, payloadHash, wallet);
+          if (inboxMessageToComplete) {
+            inboxMessageToComplete.markProcessed(now);
+            await this.inboxRepository.save(inboxMessageToComplete);
+          }
+          this.metrics?.incrementDuplicateDetected(
+            command.inboxEnvelope ? "sqs_inbox" : "http_idempotency",
+          );
+          this.logger?.info("wager_transaction_idempotent_replay", {
+            transactionId: postLockExisting.id,
+            walletId: postLockExisting.walletId,
+            providerId: postLockExisting.providerId,
+          });
+          return replay;
+        }
+
+        await this.evaluateAndApplyTransaction(
+          candidateTransaction,
+          wallet,
+          now,
+          correlationId,
+          true,
+        );
+
         if (inboxMessageToComplete) {
           inboxMessageToComplete.markProcessed(now);
           await this.inboxRepository.save(inboxMessageToComplete);
         }
-        return replay;
-      }
 
-      const correlationId = command.correlationId ?? candidateTransaction.id;
-      await this.evaluateAndApplyTransaction(
-        candidateTransaction,
-        wallet,
-        now,
-        correlationId,
-        true,
+        const pendingOutboxCount = await this.outboxRepository.countPending();
+        this.metrics?.setOutboxLag(pendingOutboxCount);
+
+        return {
+          transactionId: candidateTransaction.id,
+          status: candidateTransaction.status,
+          balance: (candidateTransaction.observedBalance ?? wallet.balance).toJSON(),
+          idempotentReplay: false,
+          ...(candidateTransaction.failureCode
+            ? { failureCode: candidateTransaction.failureCode }
+            : {}),
+        };
+      });
+    } finally {
+      this.metrics?.observeProcessingLatencyMs(
+        "process_wager_transaction",
+        performance.now() - startedAt,
       );
-
-      if (inboxMessageToComplete) {
-        inboxMessageToComplete.markProcessed(now);
-        await this.inboxRepository.save(inboxMessageToComplete);
-      }
-
-      return {
-        transactionId: candidateTransaction.id,
-        status: candidateTransaction.status,
-        balance: (candidateTransaction.observedBalance ?? wallet.balance).toJSON(),
-        idempotentReplay: false,
-        ...(candidateTransaction.failureCode
-          ? { failureCode: candidateTransaction.failureCode }
-          : {}),
-      };
-    });
+    }
   }
 
   async evaluateAndApplyTransaction(
@@ -281,6 +344,13 @@ export class ProcessWagerTransactionUseCase {
             occurredAt: now,
           });
           await this.outboxRepository.enqueue(OutboxMessage.enqueue(pendingEvent));
+          this.metrics?.incrementTransactionByStatus(transaction.status, transaction.kind);
+          this.logger?.info("wager_transaction_pending_reference", {
+            transactionId: transaction.id,
+            walletId: transaction.walletId,
+            providerId: transaction.providerId,
+            kind: transaction.kind,
+          });
         } else {
           transaction.schedulePendingReferenceRetry(now);
           await this.wagerTransactionRepository.save(transaction);
@@ -323,6 +393,13 @@ export class ProcessWagerTransactionUseCase {
         },
       );
       await this.outboxRepository.enqueue(OutboxMessage.enqueue(processedEvent));
+      this.metrics?.incrementTransactionByStatus(transaction.status, transaction.kind);
+      this.logger?.info("wager_transaction_processed", {
+        transactionId: transaction.id,
+        walletId: transaction.walletId,
+        providerId: transaction.providerId,
+        kind: transaction.kind,
+      });
       return;
     }
 
@@ -379,6 +456,14 @@ export class ProcessWagerTransactionUseCase {
         OutboxMessage.enqueue(balanceChangedEvent),
         OutboxMessage.enqueue(processedEvent),
       ]);
+
+      this.metrics?.incrementTransactionByStatus(transaction.status, transaction.kind);
+      this.logger?.info("wager_transaction_processed", {
+        transactionId: transaction.id,
+        walletId: transaction.walletId,
+        providerId: transaction.providerId,
+        kind: transaction.kind,
+      });
     } catch (error) {
       if (error instanceof BusinessRuleViolationError) {
         await this.persistRejected(
@@ -477,6 +562,15 @@ export class ProcessWagerTransactionUseCase {
       occurredAt: now,
     });
     await this.outboxRepository.enqueue(OutboxMessage.enqueue(rejectedEvent));
+
+    this.metrics?.incrementTransactionByStatus(transaction.status, transaction.kind);
+    this.logger?.warn("wager_transaction_rejected", {
+      transactionId: transaction.id,
+      walletId: transaction.walletId,
+      providerId: transaction.providerId,
+      kind: transaction.kind,
+      failureCode,
+    });
   }
 
   private async findExistingTransaction(
@@ -520,4 +614,3 @@ export class ProcessWagerTransactionUseCase {
     };
   }
 }
-

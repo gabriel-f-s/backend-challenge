@@ -8,10 +8,19 @@ import {
 } from "@aws-sdk/client-sqs";
 import { ProcessWagerTransactionUseCase } from "@modules/wagering/application/use-cases/process-wager-transaction.use-case";
 import type { WagerTransactionKind } from "@modules/wagering/domain/enums/wager-transaction-kind.enum";
-import { Inject, Injectable, type OnModuleDestroy } from "@nestjs/common";
+import { Inject, Injectable, type OnModuleDestroy, Optional } from "@nestjs/common";
 import { Interval } from "@nestjs/schedule";
 import { loadEnvironmentConfig } from "@shared/adapters/outbound/config/env.config";
 import { SQS_CLIENT } from "@shared/adapters/outbound/sqs/sqs-client.factory";
+import {
+  CORRELATION_CONTEXT_PORT,
+  type CorrelationContextPort,
+} from "@shared/application/ports/outbound/correlation-context.port";
+import { METRICS_PORT, type MetricsPort } from "@shared/application/ports/outbound/metrics.port";
+import {
+  STRUCTURED_LOGGER_PORT,
+  type StructuredLoggerPort,
+} from "@shared/application/ports/outbound/structured-logger.port";
 import {
   BusinessRuleViolationError,
   DomainValidationError,
@@ -53,15 +62,6 @@ export interface SqsPollSummary {
   readonly released: number;
 }
 
-export interface WagerTransactionSqsConsumerOptions {
-  readonly mainQueueUrl?: string;
-  readonly dlqUrl?: string;
-  readonly maxReceiveCount?: number;
-  readonly baseBackoffSeconds?: number;
-  readonly maxBackoffSeconds?: number;
-  readonly drainTimeoutMs?: number;
-}
-
 const DEFAULT_MAX_RECEIVE_COUNT = 5;
 const DEFAULT_BASE_BACKOFF_SECONDS = 2;
 const DEFAULT_MAX_BACKOFF_SECONDS = 60;
@@ -85,6 +85,15 @@ export class WagerTransactionSqsConsumer implements OnModuleDestroy {
     @Inject(SQS_CLIENT)
     private readonly sqsClient: SQSClient,
     private readonly processWagerTransactionUseCase: ProcessWagerTransactionUseCase,
+    @Optional()
+    @Inject(METRICS_PORT)
+    private readonly metrics?: MetricsPort,
+    @Optional()
+    @Inject(STRUCTURED_LOGGER_PORT)
+    private readonly logger?: StructuredLoggerPort,
+    @Optional()
+    @Inject(CORRELATION_CONTEXT_PORT)
+    private readonly correlationContext?: CorrelationContextPort,
   ) {
     const config = loadEnvironmentConfig();
     this.mainQueueUrl = config.sqs.wagerTransactionsQueueUrl;
@@ -170,28 +179,47 @@ export class WagerTransactionSqsConsumer implements OnModuleDestroy {
 
     const trackingKey = message.MessageId ?? receiptHandle;
     this.inFlightReceipts.set(trackingKey, receiptHandle);
+    const startedAt = performance.now();
 
     let outcome: SqsMessageOutcome = "acked";
     const processingPromise = (async () => {
       try {
         const envelope = this.parseAndValidateEnvelope(message);
-        await this.processWagerTransactionUseCase.execute({
-          idempotencyKey: envelope.data.idempotencyKey,
-          providerId: envelope.data.providerId,
-          externalTransactionId: envelope.data.externalTransactionId,
-          playerId: envelope.data.playerId,
-          walletId: envelope.data.walletId,
-          roundId: envelope.data.roundId,
-          gameId: envelope.data.gameId,
-          kind: envelope.data.kind,
-          money: envelope.data.money,
-          referenceExternalTransactionId: envelope.data.referenceExternalTransactionId,
-          correlationId: envelope.correlationId ?? envelope.messageId,
-          inboxEnvelope: {
-            consumerName: WAGER_TRANSACTION_SQS_CONSUMER_NAME,
-            messageId: envelope.messageId,
-          },
-        });
+        const correlationId = envelope.correlationId ?? envelope.messageId;
+
+        const executeWork = async () => {
+          await this.processWagerTransactionUseCase.execute({
+            idempotencyKey: envelope.data.idempotencyKey,
+            providerId: envelope.data.providerId,
+            externalTransactionId: envelope.data.externalTransactionId,
+            playerId: envelope.data.playerId,
+            walletId: envelope.data.walletId,
+            roundId: envelope.data.roundId,
+            gameId: envelope.data.gameId,
+            kind: envelope.data.kind,
+            money: envelope.data.money,
+            referenceExternalTransactionId: envelope.data.referenceExternalTransactionId,
+            correlationId,
+            inboxEnvelope: {
+              consumerName: WAGER_TRANSACTION_SQS_CONSUMER_NAME,
+              messageId: envelope.messageId,
+            },
+          });
+        };
+
+        if (this.correlationContext) {
+          await this.correlationContext.run(
+            {
+              correlationId,
+              messageId: envelope.messageId,
+              walletId: envelope.data.walletId,
+              providerId: envelope.data.providerId,
+            },
+            executeWork,
+          );
+        } else {
+          await executeWork();
+        }
 
         await this.ackMessage(receiptHandle);
         outcome = "acked";
@@ -199,6 +227,7 @@ export class WagerTransactionSqsConsumer implements OnModuleDestroy {
         outcome = await this.handleProcessingError(message, receiptHandle, error);
       } finally {
         this.inFlightReceipts.delete(trackingKey);
+        this.metrics?.observeProcessingLatencyMs("sqs_message", performance.now() - startedAt);
       }
     })();
 
@@ -299,7 +328,8 @@ export class WagerTransactionSqsConsumer implements OnModuleDestroy {
     return {
       messageId,
       type: record.type,
-      occurredAt: typeof record.occurredAt === "string" ? record.occurredAt : new Date().toISOString(),
+      occurredAt:
+        typeof record.occurredAt === "string" ? record.occurredAt : new Date().toISOString(),
       correlationId: typeof record.correlationId === "string" ? record.correlationId : undefined,
       data: record.data as WagerTransactionRequestedPayload,
     };
@@ -334,6 +364,13 @@ export class WagerTransactionSqsConsumer implements OnModuleDestroy {
       this.baseBackoffSeconds * 2 ** (receiveCount - 1),
       this.maxBackoffSeconds,
     );
+
+    this.metrics?.incrementRetry("sqs_consumer");
+    this.logger?.warn("sqs_message_transient_retry_scheduled", {
+      messageId: message.MessageId,
+      receiveCount,
+      backoffSeconds,
+    });
 
     await this.sqsClient.send(
       new ChangeMessageVisibilityCommand({
@@ -376,6 +413,13 @@ export class WagerTransactionSqsConsumer implements OnModuleDestroy {
         : "MAX_RETRIES_EXCEEDED";
     const errorMessage = error instanceof Error ? error.message : String(error);
 
+    this.metrics?.incrementDlqMessage(errorCode);
+    this.logger?.error("sqs_message_moved_to_dlq", {
+      messageId: message.MessageId,
+      receiveCount,
+      errorCode,
+    });
+
     const dlqEnvelope = {
       originalMessageId: message.MessageId ?? "unknown",
       originalBody: message.Body ?? "",
@@ -403,4 +447,3 @@ export class WagerTransactionSqsConsumer implements OnModuleDestroy {
     );
   }
 }
-

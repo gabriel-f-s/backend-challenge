@@ -7,7 +7,12 @@ import {
   type WalletLedgerRepositoryPort,
 } from "@modules/wallet/application/ports/outbound/wallet-ledger.repository.port";
 import { LedgerDirection } from "@modules/wallet/domain/enums/ledger-direction.enum";
-import { Inject, Injectable, Logger } from "@nestjs/common";
+import { Inject, Injectable, Logger, Optional } from "@nestjs/common";
+import { METRICS_PORT, type MetricsPort } from "@shared/application/ports/outbound/metrics.port";
+import {
+  STRUCTURED_LOGGER_PORT,
+  type StructuredLoggerPort,
+} from "@shared/application/ports/outbound/structured-logger.port";
 import { ResourceNotFoundError } from "@shared/domain/errors/domain.error";
 import { Money, type MoneyProps } from "@shared/domain/value-objects/money.vo";
 
@@ -29,6 +34,12 @@ export class ReconcileWalletUseCase {
     private readonly walletRepository: WalletRepositoryPort,
     @Inject(WALLET_LEDGER_REPOSITORY_PORT)
     private readonly walletLedgerRepository: WalletLedgerRepositoryPort,
+    @Optional()
+    @Inject(METRICS_PORT)
+    private readonly metrics?: MetricsPort,
+    @Optional()
+    @Inject(STRUCTURED_LOGGER_PORT)
+    private readonly structuredLogger?: StructuredLoggerPort,
   ) {}
 
   async execute(walletId: string): Promise<ReconcileWalletOutput> {
@@ -52,15 +63,25 @@ export class ReconcileWalletUseCase {
     const consistent = difference.isZero();
 
     if (!consistent) {
-      this.logger.error(
-        JSON.stringify({
-          event: "wallet_reconciliation_divergence_detected",
+      this.metrics?.incrementReconciliationDivergence();
+      if (this.structuredLogger) {
+        this.structuredLogger.error("wallet_reconciliation_divergence_detected", {
           walletId: wallet.id,
           playerId: wallet.playerId,
           currency: wallet.currency,
           checkedEntries: entries.length,
-        }),
-      );
+        });
+      } else {
+        this.logger.error(
+          JSON.stringify({
+            event: "wallet_reconciliation_divergence_detected",
+            walletId: wallet.id,
+            playerId: wallet.playerId,
+            currency: wallet.currency,
+            checkedEntries: entries.length,
+          }),
+        );
+      }
     }
 
     return {
@@ -73,4 +94,3 @@ export class ReconcileWalletUseCase {
     };
   }
 }
-
