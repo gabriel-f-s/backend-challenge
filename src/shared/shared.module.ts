@@ -13,7 +13,11 @@ import { InMemoryMetricsAdapter } from "@shared/adapters/outbound/observability/
 import { JsonStructuredLoggerAdapter } from "@shared/adapters/outbound/observability/json-structured-logger.adapter";
 import { createMikroOrmOptions } from "@shared/adapters/outbound/persistence/mikro-orm.config";
 import { MikroOrmUnitOfWorkAdapter } from "@shared/adapters/outbound/persistence/mikro-orm-unit-of-work.adapter";
-import { createSqsClient, SQS_CLIENT } from "@shared/adapters/outbound/sqs/sqs-client.factory";
+import {
+  createSqsClient,
+  ensureSqsQueuesProvisioned,
+  SQS_CLIENT,
+} from "@shared/adapters/outbound/sqs/sqs-client.factory";
 import { SystemClockAdapter } from "@shared/adapters/outbound/system/system-clock.adapter";
 import { UuidV7GeneratorAdapter } from "@shared/adapters/outbound/system/uuid-v7-generator.adapter";
 import { CLOCK_PORT } from "@shared/application/ports/outbound/clock.port";
@@ -98,5 +102,10 @@ export class SharedModule implements OnModuleInit {
       return;
     }
     await this.mikroOrm.getMigrator().up();
+    try {
+      await ensureSqsQueuesProvisioned();
+    } catch {
+      // Readiness probe reports degraded if SQS is temporarily unavailable at startup
+    }
   }
 }
