@@ -1,0 +1,69 @@
+@baseUrl = http://localhost:3000
+@sqsEndpoint = http://localhost:4566
+@mainQueueUrl = {{sqsEndpoint}}/000000000000/wager-transactions.fifo
+@dlqUrl = {{sqsEndpoint}}/000000000000/wager-transactions-dlq.fifo
+@playerId = 0192f28f-5dc0-7d58-bdb2-555555555555
+
+### ============================================================================
+### 0. Criar uma Wallet para Testar o Consumidor SQS FIFO (100.00 BRL)
+### ============================================================================
+# @name createSqsTestWallet
+POST {{baseUrl}}/wallets
+Content-Type: application/json
+
+{
+  "playerId": "{{playerId}}",
+  "initialBalance": {
+    "amount": "100.00",
+    "currency": "BRL"
+  }
+}
+
+### Captura automática do walletId
+@walletId = {{createSqsTestWallet.response.body.id}}
+
+### ============================================================================
+### 1. Publicar Mensagem WagerTransactionRequested na Fila wager-transactions.fifo
+###    O WagerTransactionSqsConsumer consome automaticamente, deduplica via Inbox,
+###    debita 25.00 BRL da Wallet e faz ack (DeleteMessage) após o commit SQL.
+### ============================================================================
+POST {{mainQueueUrl}}
+Content-Type: application/x-www-form-urlencoded
+
+Action=SendMessage
+&Version=2012-11-05
+&MessageGroupId={{walletId}}
+&MessageDeduplicationId=dedup-sqs-local-bet-001
+&MessageBody=%7B%22messageId%22%3A%22msg-local-001%22%2C%22type%22%3A%22WagerTransactionRequested%22%2C%22occurredAt%22%3A%222026-11-06T12%3A00%3A00.000Z%22%2C%22data%22%3A%7B%22providerId%22%3A%22provider-a%22%2C%22externalTransactionId%22%3A%22sqs-tx-001%22%2C%22idempotencyKey%22%3A%22provider-a%3Asqs-tx-001%22%2C%22playerId%22%3A%22{{playerId}}%22%2C%22walletId%22%3A%22{{walletId}}%22%2C%22roundId%22%3A%22round-sqs-001%22%2C%22gameId%22%3A%22fortune-chimp%22%2C%22kind%22%3A%22BET%22%2C%22money%22%3A%7B%22amount%22%3A%2225.00%22%2C%22currency%22%3A%22BRL%22%7D%7D%7D
+
+### ============================================================================
+### 2. Verificar Transação Processada via SQS e Reconciliar Wallet (Saldo: 75.00 BRL)
+### ============================================================================
+GET {{baseUrl}}/providers/provider-a/wagering/transactions/sqs-tx-001
+
+### Reconciliar Wallet após consumo SQS
+POST {{baseUrl}}/wallets/{{walletId}}/reconciliation
+
+### ============================================================================
+### 3. Publicar Poison Message na Fila Principal -> Roteada para a DLQ
+### ============================================================================
+POST {{mainQueueUrl}}
+Content-Type: application/x-www-form-urlencoded
+
+Action=SendMessage
+&Version=2012-11-05
+&MessageGroupId={{walletId}}
+&MessageDeduplicationId=dedup-sqs-poison-001
+&MessageBody=%7B%22messageId%22%3A%22msg-poison-001%22%2C%22type%22%3A%22InvalidType%22%2C%22data%22%3A%7B%7D%7D
+
+### ============================================================================
+### 4. Inspecionar Mensagens na Dead-Letter Queue (wager-transactions-dlq.fifo)
+### ============================================================================
+POST {{dlqUrl}}
+Content-Type: application/x-www-form-urlencoded
+
+Action=ReceiveMessage
+&Version=2012-11-05
+&MaxNumberOfMessages=10
+&WaitTimeSeconds=1
+

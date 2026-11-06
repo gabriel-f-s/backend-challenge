@@ -365,8 +365,12 @@ export class WagerTransactionSqsConsumer implements OnModuleDestroy {
       this.maxBackoffSeconds,
     );
 
+    const correlationId =
+      this.correlationContext?.get()?.correlationId ?? message.MessageId ?? "sqs-unknown";
+
     this.metrics?.incrementRetry("sqs_consumer");
     this.logger?.warn("sqs_message_transient_retry_scheduled", {
+      correlationId,
       messageId: message.MessageId,
       receiveCount,
       backoffSeconds,
@@ -413,8 +417,12 @@ export class WagerTransactionSqsConsumer implements OnModuleDestroy {
         : "MAX_RETRIES_EXCEEDED";
     const errorMessage = error instanceof Error ? error.message : String(error);
 
+    const correlationId =
+      this.correlationContext?.get()?.correlationId ?? message.MessageId ?? "sqs-unknown";
+
     this.metrics?.incrementDlqMessage(errorCode);
     this.logger?.error("sqs_message_moved_to_dlq", {
+      correlationId,
       messageId: message.MessageId,
       receiveCount,
       errorCode,

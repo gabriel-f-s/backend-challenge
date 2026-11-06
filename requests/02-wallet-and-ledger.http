@@ -1,0 +1,89 @@
+@baseUrl = http://localhost:3000
+@playerId = 0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1
+@zeroBalancePlayerId = 0192f28f-5dc0-7d58-bdb2-814ad6a0f4a2
+
+### ============================================================================
+### 1. Criar Wallet com Saldo Inicial > 0 (201 Created)
+###    Gera transação interna OPENING + lançamento CREDIT no ledger na mesma TX
+### ============================================================================
+# @name createWallet
+POST {{baseUrl}}/wallets
+Content-Type: application/json
+X-Correlation-Id: corr-wallet-open-001
+
+{
+  "playerId": "{{playerId}}",
+  "initialBalance": {
+    "amount": "1000.00",
+    "currency": "BRL"
+  }
+}
+
+### Captura automática do walletId retornado acima
+@walletId = {{createWallet.response.body.id}}
+
+### ============================================================================
+### 2. Criar Wallet Duplicada para o mesmo playerId + currency (409 Conflict)
+### ============================================================================
+POST {{baseUrl}}/wallets
+Content-Type: application/json
+X-Correlation-Id: corr-wallet-dup-002
+
+{
+  "playerId": "{{playerId}}",
+  "initialBalance": {
+    "amount": "500.00",
+    "currency": "BRL"
+  }
+}
+
+### ============================================================================
+### 3. Criar Wallet com Saldo Inicial 0.00 (201 Created — sem lançamento OPENING)
+### ============================================================================
+POST {{baseUrl}}/wallets
+Content-Type: application/json
+X-Correlation-Id: corr-wallet-zero-003
+
+{
+  "playerId": "{{zeroBalancePlayerId}}",
+  "initialBalance": {
+    "amount": "0.00",
+    "currency": "BRL"
+  }
+}
+
+### ============================================================================
+### 4. Validação de Money Inválido — Escala incorreta / negativo (400 Bad Request)
+### ============================================================================
+POST {{baseUrl}}/wallets
+Content-Type: application/json
+X-Correlation-Id: corr-wallet-invalid-004
+
+{
+  "playerId": "0192f28f-5dc0-7d58-bdb2-999999999999",
+  "initialBalance": {
+    "amount": "-10.5",
+    "currency": "BRL"
+  }
+}
+
+### ============================================================================
+### 5. Consultar Wallet por ID (200 OK)
+### ============================================================================
+GET {{baseUrl}}/wallets/{{walletId}}
+X-Correlation-Id: corr-wallet-get-005
+
+### ============================================================================
+### 6. Listar Lançamentos do Ledger com Paginação por Cursor Opaco (200 OK)
+### ============================================================================
+# @name listLedgerPage1
+GET {{baseUrl}}/wallets/{{walletId}}/ledger?limit=50
+X-Correlation-Id: corr-wallet-ledger-006
+
+### ============================================================================
+### 7. Executar Reconciliação da Wallet (200 OK — consistent: true)
+###    Comprova que wallet.balance == saldo reconstruído pelo ledger
+### ============================================================================
+POST {{baseUrl}}/wallets/{{walletId}}/reconciliation
+X-Correlation-Id: corr-wallet-reconcile-007
+

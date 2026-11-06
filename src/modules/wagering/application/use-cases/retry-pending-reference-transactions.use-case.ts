@@ -184,9 +184,11 @@ export class RetryPendingReferenceTransactionsUseCase {
           await this.outboxRepository.enqueue(OutboxMessage.enqueue(rejectedEvent));
           this.metrics?.incrementTransactionByStatus(transaction.status, transaction.kind);
           this.logger?.warn("wager_transaction_pending_reference_timed_out", {
+            correlationId: transaction.id,
             transactionId: transaction.id,
             walletId: transaction.walletId,
             providerId: transaction.providerId,
+            failureCode: FailureCode.ReferenceNotFoundTimeout,
             attempts: nextAttemptCount,
           });
           timedOutCount += 1;

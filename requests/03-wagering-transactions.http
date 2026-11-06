@@ -1,0 +1,387 @@
+@baseUrl = http://localhost:3000
+@providerId = provider-a
+@playerId = 0192f28f-5dc0-7d58-bdb2-777777777777
+@gameId = fortune-chimp
+
+### ============================================================================
+### 0. Setup Inicial: Criar Wallet para os Testes de Wagering (100.00 BRL)
+### ============================================================================
+# @name setupWageringWallet
+POST {{baseUrl}}/wallets
+Content-Type: application/json
+X-Correlation-Id: corr-wager-setup-000
+
+{
+  "playerId": "{{playerId}}",
+  "initialBalance": {
+    "amount": "100.00",
+    "currency": "BRL"
+  }
+}
+
+### Captura automática do walletId criado no passo 0
+@walletId = {{setupWageringWallet.response.body.id}}
+
+### ============================================================================
+### 1. BET — Débito de 25.00 BRL (200 OK | Saldo: 100.00 -> 75.00 BRL)
+### ============================================================================
+# @name submitBet1
+POST {{baseUrl}}/wagering/transactions
+Content-Type: application/json
+Idempotency-Key: {{providerId}}:tx-bet-001
+X-Correlation-Id: corr-wager-bet-001
+
+{
+  "providerId": "{{providerId}}",
+  "externalTransactionId": "tx-bet-001",
+  "playerId": "{{playerId}}",
+  "walletId": "{{walletId}}",
+  "roundId": "round-001",
+  "gameId": "{{gameId}}",
+  "kind": "BET",
+  "money": {
+    "amount": "25.00",
+    "currency": "BRL"
+  }
+}
+
+### Captura do transactionId interno do BET 1
+@bet1TransactionId = {{submitBet1.response.body.transactionId}}
+
+### ============================================================================
+### 2. Replay Idempotente do BET 1 (200 OK | idempotentReplay: true)
+###    Retorna o resultado e o saldo observado original (75.00 BRL)
+### ============================================================================
+POST {{baseUrl}}/wagering/transactions
+Content-Type: application/json
+Idempotency-Key: {{providerId}}:tx-bet-001
+X-Correlation-Id: corr-wager-bet-replay-002
+
+{
+  "providerId": "{{providerId}}",
+  "externalTransactionId": "tx-bet-001",
+  "playerId": "{{playerId}}",
+  "walletId": "{{walletId}}",
+  "roundId": "round-001",
+  "gameId": "{{gameId}}",
+  "kind": "BET",
+  "money": {
+    "amount": "25.00",
+    "currency": "BRL"
+  }
+}
+
+### ============================================================================
+### 3. Conflito de Idempotência — Mesma Key com Payload Diferente (409 Conflict)
+### ============================================================================
+POST {{baseUrl}}/wagering/transactions
+Content-Type: application/json
+Idempotency-Key: {{providerId}}:tx-bet-001
+X-Correlation-Id: corr-wager-bet-conflict-003
+
+{
+  "providerId": "{{providerId}}",
+  "externalTransactionId": "tx-bet-001",
+  "playerId": "{{playerId}}",
+  "walletId": "{{walletId}}",
+  "roundId": "round-001",
+  "gameId": "{{gameId}}",
+  "kind": "BET",
+  "money": {
+    "amount": "99.00",
+    "currency": "BRL"
+  }
+}
+
+### ============================================================================
+### 4. WIN — Crédito de 60.00 BRL referenciando a BET da rodada (200 OK | 75.00 -> 135.00 BRL)
+### ============================================================================
+POST {{baseUrl}}/wagering/transactions
+Content-Type: application/json
+Idempotency-Key: {{providerId}}:tx-win-001
+X-Correlation-Id: corr-wager-win-004
+
+{
+  "providerId": "{{providerId}}",
+  "externalTransactionId": "tx-win-001",
+  "playerId": "{{playerId}}",
+  "walletId": "{{walletId}}",
+  "roundId": "round-001",
+  "gameId": "{{gameId}}",
+  "kind": "WIN",
+  "money": {
+    "amount": "60.00",
+    "currency": "BRL"
+  },
+  "referenceExternalTransactionId": "tx-bet-001"
+}
+
+### ============================================================================
+### 5. LOSS — Registra derrota sem alterar saldo e sem gerar ledger (200 OK | 135.00 BRL)
+### ============================================================================
+POST {{baseUrl}}/wagering/transactions
+Content-Type: application/json
+Idempotency-Key: {{providerId}}:tx-loss-001
+X-Correlation-Id: corr-wager-loss-005
+
+{
+  "providerId": "{{providerId}}",
+  "externalTransactionId": "tx-loss-001",
+  "playerId": "{{playerId}}",
+  "walletId": "{{walletId}}",
+  "roundId": "round-001",
+  "gameId": "{{gameId}}",
+  "kind": "LOSS",
+  "money": {
+    "amount": "0.00",
+    "currency": "BRL"
+  },
+  "referenceExternalTransactionId": "tx-bet-001"
+}
+
+### ============================================================================
+### 6. REFUND — Estorna a BET 1 creditando 25.00 BRL (200 OK | 135.00 -> 160.00 BRL)
+### ============================================================================
+POST {{baseUrl}}/wagering/transactions
+Content-Type: application/json
+Idempotency-Key: {{providerId}}:tx-refund-001
+X-Correlation-Id: corr-wager-refund-006
+
+{
+  "providerId": "{{providerId}}",
+  "externalTransactionId": "tx-refund-001",
+  "playerId": "{{playerId}}",
+  "walletId": "{{walletId}}",
+  "roundId": "round-001",
+  "gameId": "{{gameId}}",
+  "kind": "REFUND",
+  "money": {
+    "amount": "25.00",
+    "currency": "BRL"
+  },
+  "referenceExternalTransactionId": "tx-bet-001"
+}
+
+### ============================================================================
+### 7. REFUND Duplicado sobre a mesma BET (422 Unprocessable Entity)
+###    status: "REJECTED" | failureCode: "REFERENCE_ALREADY_REVERSED"
+### ============================================================================
+POST {{baseUrl}}/wagering/transactions
+Content-Type: application/json
+Idempotency-Key: {{providerId}}:tx-refund-dup-002
+X-Correlation-Id: corr-wager-refund-dup-007
+
+{
+  "providerId": "{{providerId}}",
+  "externalTransactionId": "tx-refund-dup-002",
+  "playerId": "{{playerId}}",
+  "walletId": "{{walletId}}",
+  "roundId": "round-001",
+  "gameId": "{{gameId}}",
+  "kind": "REFUND",
+  "money": {
+    "amount": "25.00",
+    "currency": "BRL"
+  },
+  "referenceExternalTransactionId": "tx-bet-001"
+}
+
+### ============================================================================
+### 8. ROLLBACK — Inverte o WIN de 60.00 BRL debitando a wallet (200 OK | 160.00 -> 100.00 BRL)
+### ============================================================================
+POST {{baseUrl}}/wagering/transactions
+Content-Type: application/json
+Idempotency-Key: {{providerId}}:tx-rollback-win-001
+X-Correlation-Id: corr-wager-rollback-008
+
+{
+  "providerId": "{{providerId}}",
+  "externalTransactionId": "tx-rollback-win-001",
+  "playerId": "{{playerId}}",
+  "walletId": "{{walletId}}",
+  "roundId": "round-001",
+  "gameId": "{{gameId}}",
+  "kind": "ROLLBACK",
+  "money": {
+    "amount": "60.00",
+    "currency": "BRL"
+  },
+  "referenceExternalTransactionId": "tx-win-001"
+}
+
+### ============================================================================
+### 9. BET sem Saldo Suficiente (422 Unprocessable Entity)
+###    status: "REJECTED" | failureCode: "INSUFFICIENT_FUNDS_BET"
+### ============================================================================
+POST {{baseUrl}}/wagering/transactions
+Content-Type: application/json
+Idempotency-Key: {{providerId}}:tx-bet-overdraft-001
+X-Correlation-Id: corr-wager-overdraft-009
+
+{
+  "providerId": "{{providerId}}",
+  "externalTransactionId": "tx-bet-overdraft-001",
+  "playerId": "{{playerId}}",
+  "walletId": "{{walletId}}",
+  "roundId": "round-002",
+  "gameId": "{{gameId}}",
+  "kind": "BET",
+  "money": {
+    "amount": "500.00",
+    "currency": "BRL"
+  }
+}
+
+### ============================================================================
+### 10. Reversão (ROLLBACK) que deixaria saldo negativo — FailureCode Distinto!
+###     10A: WIN de 50.00 BRL (100.00 -> 150.00 BRL)
+###     10B: BET de 120.00 BRL (150.00 -> 30.00 BRL)
+###     10C: ROLLBACK do WIN de 50.00 BRL com saldo de 30.00 -> 422 INSUFFICIENT_FUNDS_REVERSAL
+### ============================================================================
+POST {{baseUrl}}/wagering/transactions
+Content-Type: application/json
+Idempotency-Key: {{providerId}}:tx-win-for-rev-010a
+X-Correlation-Id: corr-wager-rev-010a
+
+{
+  "providerId": "{{providerId}}",
+  "externalTransactionId": "tx-win-for-rev-010a",
+  "playerId": "{{playerId}}",
+  "walletId": "{{walletId}}",
+  "roundId": "round-010",
+  "gameId": "{{gameId}}",
+  "kind": "WIN",
+  "money": {
+    "amount": "50.00",
+    "currency": "BRL"
+  }
+}
+
+### 10B: BET consumindo 120.00 BRL (saldo cai para 30.00 BRL)
+POST {{baseUrl}}/wagering/transactions
+Content-Type: application/json
+Idempotency-Key: {{providerId}}:tx-bet-drain-010b
+X-Correlation-Id: corr-wager-rev-010b
+
+{
+  "providerId": "{{providerId}}",
+  "externalTransactionId": "tx-bet-drain-010b",
+  "playerId": "{{playerId}}",
+  "walletId": "{{walletId}}",
+  "roundId": "round-010",
+  "gameId": "{{gameId}}",
+  "kind": "BET",
+  "money": {
+    "amount": "120.00",
+    "currency": "BRL"
+  }
+}
+
+### 10C: ROLLBACK do WIN de 50.00 BRL (422 | failureCode: "INSUFFICIENT_FUNDS_REVERSAL")
+POST {{baseUrl}}/wagering/transactions
+Content-Type: application/json
+Idempotency-Key: {{providerId}}:tx-rollback-neg-010c
+X-Correlation-Id: corr-wager-rev-010c
+
+{
+  "providerId": "{{providerId}}",
+  "externalTransactionId": "tx-rollback-neg-010c",
+  "playerId": "{{playerId}}",
+  "walletId": "{{walletId}}",
+  "roundId": "round-010",
+  "gameId": "{{gameId}}",
+  "kind": "ROLLBACK",
+  "money": {
+    "amount": "50.00",
+    "currency": "BRL"
+  },
+  "referenceExternalTransactionId": "tx-win-for-rev-010a"
+}
+
+### ============================================================================
+### 11. Conflito de Moeda — Operação USD em Wallet BRL (422 Unprocessable Entity)
+###     status: "REJECTED" | failureCode: "CURRENCY_MISMATCH"
+### ============================================================================
+POST {{baseUrl}}/wagering/transactions
+Content-Type: application/json
+Idempotency-Key: {{providerId}}:tx-usd-mismatch-011
+X-Correlation-Id: corr-wager-currency-011
+
+{
+  "providerId": "{{providerId}}",
+  "externalTransactionId": "tx-usd-mismatch-011",
+  "playerId": "{{playerId}}",
+  "walletId": "{{walletId}}",
+  "roundId": "round-011",
+  "gameId": "{{gameId}}",
+  "kind": "BET",
+  "money": {
+    "amount": "10.00",
+    "currency": "USD"
+  }
+}
+
+### ============================================================================
+### 12. Referência Fora de Ordem (PENDING_REFERENCE -> PROCESSED pelo Worker)
+###     12A: Envia REFUND antes da BET existir -> 202 Accepted (PENDING_REFERENCE)
+###     12B: Envia a BET referenciada -> 200 OK (PROCESSED)
+###     12C: Consulta o REFUND após ~1s -> status: "PROCESSED"
+### ============================================================================
+POST {{baseUrl}}/wagering/transactions
+Content-Type: application/json
+Idempotency-Key: {{providerId}}:tx-refund-early-012a
+X-Correlation-Id: corr-wager-ooo-012a
+
+{
+  "providerId": "{{providerId}}",
+  "externalTransactionId": "tx-refund-early-012a",
+  "playerId": "{{playerId}}",
+  "walletId": "{{walletId}}",
+  "roundId": "round-012",
+  "gameId": "{{gameId}}",
+  "kind": "REFUND",
+  "money": {
+    "amount": "15.00",
+    "currency": "BRL"
+  },
+  "referenceExternalTransactionId": "tx-bet-late-012b"
+}
+
+### 12B: Envia a BET referenciada logo depois (30.00 -> 15.00 BRL, e o Worker restaura para 30.00 BRL)
+POST {{baseUrl}}/wagering/transactions
+Content-Type: application/json
+Idempotency-Key: {{providerId}}:tx-bet-late-012b
+X-Correlation-Id: corr-wager-ooo-012b
+
+{
+  "providerId": "{{providerId}}",
+  "externalTransactionId": "tx-bet-late-012b",
+  "playerId": "{{playerId}}",
+  "walletId": "{{walletId}}",
+  "roundId": "round-012",
+  "gameId": "{{gameId}}",
+  "kind": "BET",
+  "money": {
+    "amount": "15.00",
+    "currency": "BRL"
+  }
+}
+
+### 12C: Consultar o REFUND fora de ordem pelo Provider + ExternalId (após ~1s estará PROCESSED)
+GET {{baseUrl}}/providers/{{providerId}}/wagering/transactions/tx-refund-early-012a
+X-Correlation-Id: corr-wager-ooo-012c
+
+### ============================================================================
+### 13. Consultas GET de Transações e Reconciliação Final da Wallet
+### ============================================================================
+GET {{baseUrl}}/wagering/transactions/{{bet1TransactionId}}
+X-Correlation-Id: corr-wager-get-internal-013a
+
+### Consulta por Provider + ExternalTransactionId
+GET {{baseUrl}}/providers/{{providerId}}/wagering/transactions/tx-bet-001
+X-Correlation-Id: corr-wager-get-external-013b
+
+### Reconciliação Final da Wallet (consistent: true)
+POST {{baseUrl}}/wallets/{{walletId}}/reconciliation
+X-Correlation-Id: corr-wager-reconcile-013c
+

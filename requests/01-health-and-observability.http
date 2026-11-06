@@ -1,0 +1,21 @@
+@baseUrl = http://localhost:3000
+@correlationId = corr-health-local-001
+
+### ============================================================================
+### 1. Liveness Probe (Processo vivo — não exige autenticação)
+### ============================================================================
+GET {{baseUrl}}/health/live
+X-Correlation-Id: {{correlationId}}
+
+### ============================================================================
+### 2. Readiness Probe (Valida conectividade real com PostgreSQL + MiniStack SQS)
+### ============================================================================
+GET {{baseUrl}}/health/ready
+X-Correlation-Id: {{correlationId}}
+
+### ============================================================================
+### 3. Snapshot de Métricas Operacionais e Latência (p50, p95, p99)
+### ============================================================================
+GET {{baseUrl}}/metrics
+X-Correlation-Id: {{correlationId}}
+
