@@ -744,3 +744,85 @@ wallet.balance == saldo reconstruído pelo ledger
 ### Diferenciais opcionais
 
 Teste de carga também conta como diferencial. Se fizer, exponha como `bun run test:load` e registre ambiente, metodologia, throughput, p50/p95/p99, taxa de erro, conflitos de concorrência e outbox lag. Não há meta de RPS — a qualidade do experimento e a honestidade da análise pesam mais que o número bruto.
+
+---
+
+## 15. Setup, Execução e Comandos
+
+As decisões arquiteturais, justificativa do **MikroORM**, estratégia de **Pessimistic Locking (`SELECT ... FOR UPDATE`)**, desenho do schema SQL, algoritmo de `payloadHash` canônico e taxonomia de `FailureCode` estão documentados em detalhes em [`ARCHITECTURE.md`](./ARCHITECTURE.md).
+
+### Pré-requisitos
+- **Bun 1.x** (`>= 1.1`)
+- **Docker** e **Docker Compose**
+
+### 1. Instalar dependências e variáveis de ambiente
+
+```bash
+cp .env.example .env
+bun install
+```
+
+### 2. Subir a infraestrutura local (PostgreSQL 16 + MiniStack SQS FIFO & DLQ)
+
+```bash
+docker compose up -d
+```
+
+- **PostgreSQL 16:** exposto em `localhost:5433` (`DB_PORT=5433`, banco `wagering_processor`, usuário `jungle`).
+- **MiniStack (AWS SQS):** exposto em `localhost:4566`, com provisionamento automático das filas `wager-transactions.fifo` e `wager-transactions-dlq.fifo` via container `ministack-init`.
+
+### 3. Executar Migrations SQL (versionadas e reversíveis)
+
+```bash
+# Aplicar todas as migrations pendentes
+bun run migration:up
+
+# Reverter a última migration (quando necessário)
+bun run migration:down
+```
+
+*(Nota: ao iniciar a aplicação com `bun run start` ou `bun run start:dev`, as migrations pendentes e a verificação das filas SQS também são executadas automaticamente no startup).*
+
+### 4. Executar a Aplicação
+
+```bash
+# Modo desenvolvimento (watch)
+bun run start:dev
+
+# Modo produção
+bun run build
+bun run start:prod
+```
+
+A API HTTP estará disponível em `http://localhost:3000`:
+- `POST /wallets` — Criação de carteira com transação interna `OPENING`
+- `GET /wallets/:walletId` — Consulta de carteira
+- `GET /wallets/:walletId/ledger?cursor=...&limit=50` — Listagem paginada por cursor opaco
+- `POST /wallets/:walletId/reconciliation` — Reconciliação (`wallet.balance == saldo reconstruído pelo ledger`)
+- `POST /wagering/transactions` — Submissão idempotente de `BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK` (header `Idempotency-Key`)
+- `GET /wagering/transactions/:transactionId` — Consulta por ID interno
+- `GET /providers/:providerId/wagering/transactions/:externalTransactionId` — Consulta por provedor e ID externo
+- `GET /health/live` — Liveness probe (sem autenticação)
+- `GET /health/ready` — Readiness probe validando PostgreSQL e MiniStack SQS (sem autenticação)
+- `GET /metrics` — Snapshot de métricas operacionais e percentis de latência (`p50`, `p95`, `p99`)
+
+### 5. Executar as Suítes de Testes
+
+```bash
+# Testes Unitários (Domínio, Value Objects, Use Cases, Consumers, Observabilidade)
+bun run test
+
+# Testes de Integração Real (PostgreSQL + MiniStack SQS em containers)
+bun run test:integration
+
+# Testes de Concorrência Real (8 cenários obrigatórios da Seção 13 com múltiplas instâncias)
+bun run test:concurrency
+
+# Executar toda a suíte (Unit + Integration + Concurrency)
+bun run test:all
+
+# Typecheck e Build
+bun run typecheck
+bun run build
+```
+
